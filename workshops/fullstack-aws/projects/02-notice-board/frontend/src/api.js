@@ -19,3 +19,14 @@ export async function deleteNotice(id) {
   const res = await fetch(`${API_URL}/notices/${id}`, { method: 'DELETE' })
   return res.json()
 }
+
+export async function addReaction(id, reaction) {
+  const res = await fetch(`${API_URL}/notices/${id}/reactions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reaction }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to add reaction')
+  return data
+}

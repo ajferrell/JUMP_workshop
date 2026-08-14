@@ -2,11 +2,12 @@ import json
 import os
 from bson import ObjectId
 from bson.errors import InvalidId
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 from datetime import datetime, timezone
 
 MONGO_HOST = os.environ["MONGO_HOST"]
 MONGO_PORT = int(os.environ.get("MONGO_PORT", 27017))
+REACTION_TYPES = ("thumbs_up", "heart", "smile", "fire")
 
 
 def get_collection():
@@ -39,6 +40,12 @@ def lambda_handler(event, context):
             body = json.loads(event.get("body") or "{}")
             return create_notice(body)
 
+        if method == "POST" and path.startswith("/notices/") and path.endswith("/reactions"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 3 and parts[0] == "notices" and parts[2] == "reactions":
+                body = json.loads(event.get("body") or "{}")
+                return add_reaction(parts[1], body)
+
         if method == "DELETE" and path.startswith("/notices/"):
             notice_id = path.split("/")[-1]
             return delete_notice(notice_id)
@@ -51,9 +58,13 @@ def lambda_handler(event, context):
 
 
 def get_notices():
-    notices = list(get_collection().find({}, {"_id": 1, "name": 1, "message": 1, "created_at": 1}))
+    notices = list(get_collection().find(
+        {},
+        {"_id": 1, "name": 1, "message": 1, "created_at": 1, "reactions": 1},
+    ))
     for n in notices:
         n["id"] = str(n.pop("_id"))
+        n["reactions"] = normalized_reactions(n.get("reactions"))
     return response(200, {"notices": notices})
 
 def create_notice(data):
@@ -66,11 +77,42 @@ def create_notice(data):
         "name": name,
         "message": message,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "reactions": {reaction: 0 for reaction in REACTION_TYPES},
     }
 
     get_collection().insert_one(notice)
     notice["id"] = str(notice.pop("_id"))
     return response(201, {"notice": notice})
+
+
+def add_reaction(notice_id, data):
+    try:
+        object_id = ObjectId(notice_id)
+    except InvalidId:
+        return response(400, {"error": f"Invalid notice id: {notice_id}"})
+
+    reaction = data.get("reaction")
+    if reaction not in REACTION_TYPES:
+        return response(400, {"error": "Invalid reaction"})
+
+    notice = get_collection().find_one_and_update(
+        {"_id": object_id},
+        {"$inc": {f"reactions.{reaction}": 1}},
+        projection={"reactions": 1},
+        return_document=ReturnDocument.AFTER,
+    )
+    if notice is None:
+        return response(404, {"error": "Notice not found"})
+
+    return response(200, {
+        "id": notice_id,
+        "reactions": normalized_reactions(notice.get("reactions")),
+    })
+
+
+def normalized_reactions(reactions):
+    reactions = reactions or {}
+    return {reaction: reactions.get(reaction, 0) for reaction in REACTION_TYPES}
 
 
 def delete_notice(notice_id):
